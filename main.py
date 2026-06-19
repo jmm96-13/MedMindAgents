@@ -23,7 +23,7 @@ llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE)
 embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
 
 
-"""knowledge_base = [       AQUI VA EL INDEXADO
+"""knowledge_base = [       AQUI VA EL INDEXADOaaa
     Document(
         page_content=(
             "Para reiniciar el servidor VPN corporativo, ejecuta el comando "

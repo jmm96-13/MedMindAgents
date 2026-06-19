@@ -1,0 +1,7 @@
+-Crear BBDD
+-Crear funciones de cada agente:
+  -agente chat que pide sintomas
+  -agente recibe sintomas y busca en rag posibles diagnosticos
+  -¿?agente que busca especialista medico para cada posible diagnostico y lo devuelve al usuario
+-Juntar agentes con langgraph
+...

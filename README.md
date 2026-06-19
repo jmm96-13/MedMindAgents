@@ -1,4 +1,5 @@
 # MedMindAgents
+## Arquitectura
 raw_chat_history (entrada)
         │
         ▼
@@ -27,3 +28,16 @@ raw_chat_history (entrada)
          │
          ▼
     traces.jsonl  (log de ejecuciones)
+
+## Estructura de archivos
+ triage-clinico/
+├── state.py            # TriageState — objeto compartido entre agentes
+├── agent_javier.py     # Agente 1: extractor de síntomas
+├── agent_antonio.py    # Agente 2: consultor RAG (ChromaDB)
+├── agent_pepi.py       # Agente 3: evaluador de urgencia
+├── supervisor.py       # Supervisor: informe SBAR final (todos)
+├── main.py             # Punto de entrada + construcción del grafo
+├── requirements.txt    # Dependencias
+├── traces.jsonl        # Log automático de ejecuciones
+├── docs/               # (crear) PDFs médicos para indexar
+└── chroma_db/          # (auto) Base vectorial generada por Antonio

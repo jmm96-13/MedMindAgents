@@ -113,6 +113,7 @@ def _parse_causes_from_text(text: str) -> List[str]:
     return causes
 
 
+
 SPECIALIST_KEYWORDS = {
     "cardiología": ["infarto", "angina", "dolor toracico", "palpitaciones"],
     "neumología": ["dificultad respiratoria", "disnea", "tos", "sibilancias"],

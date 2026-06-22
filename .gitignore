@@ -229,3 +229,6 @@ wheels/
 .venv
 .langgraph_api
 chroma_db
+
+
+indexed_files.json

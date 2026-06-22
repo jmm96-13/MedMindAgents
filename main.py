@@ -7,10 +7,77 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import StateGraph, START, END
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import config
+from . import config, indexing, sessions
+from .graph import construir_grafo
+from .schemas import ChatRequest, ChatResponse, FinalizarResponse
+
 
 LLM_MODEL = "qwen3:8b"
 EMBEDDING_MODEL = "nomic-embed-text"
 TEMPERATURE = 0.5
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+app = FastAPI(title="Triaje Médico - Chatbot")
+
+app.mount("/static", StaticFiles(directory=str("./static")), name="static")
+
+@app.get("/")
+def index():
+    return FileResponse(str("./static/index.html"))
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    """Procesa un mensaje del usuario.
+
+    Esta función es síncrona a propósito: ChatOllama.invoke bloquea, así que
+    FastAPI la ejecuta en su threadpool sin congelar el event loop.
+    """
+    # 1. Crear sesión si es el primer mensaje.
+    session_id = req.session_id or sessions.crear_sesion()
+    sesion = sessions.get_sesion(session_id)
+    if sesion is None:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    if not sesion["activa"]:
+        raise HTTPException(status_code=409, detail="La sesión ya está finalizada")
+
+    # 2. Feedback de insatisfacción sobre la respuesta anterior → escalar.
+    if req.feedback == "insatisfecho":
+        sessions.escalar(session_id, "feedback")
+
+    # 3. Ejecutar el grafo con el nivel actual de la sesión.
+    estado_inicial = {
+        "pregunta": req.mensaje,
+        "nivel": sesion["nivel"],
+        "es_python": False,
+        "contexto": [],
+        "respuesta": "",
+        "escalado": False,
+        "motivo": sesion.get("motivo_escalado", ""),
+    }
+    resultado = RECURSOS["grafo"].invoke(estado_inicial)
+
+    # 4. Si el grafo escaló (auto), persistir el nivel 2 en la sesión.
+    if resultado.get("escalado") and sesion["nivel"] != 2:
+        sessions.escalar(session_id, resultado.get("motivo", "auto"))
+
+    # 5. Registrar el turno y responder.
+    sessions.registrar_turno(
+        session_id, req.mensaje, resultado["respuesta"], resultado["nivel"]
+    )
+    return ChatResponse(
+        session_id=session_id,
+        nivel=resultado["nivel"],
+        respuesta=resultado["respuesta"],
+        escalado=resultado.get("escalado", False),
+        motivo=resultado.get("motivo", ""),
+    )
+
 
 logging.basicConfig(
         level=logging.INFO,

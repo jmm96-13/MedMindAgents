@@ -29,7 +29,6 @@
     .bot { align-items: flex-start; }
     .bot .burbuja { background: var(--gris); }
     .meta { font-size: 0.72rem; color: #64748b; margin-top: 0.2rem; }
-    .nivel1 { color: #059669; } .nivel2 { color: #b45309; }
     .fila { display: flex; gap: 0.5rem; }
     input[type=text] {
       flex: 1; padding: 0.65rem 0.8rem; border: 1px solid var(--borde);
@@ -37,9 +36,20 @@
     }
     button {
       border: none; border-radius: 10px; padding: 0.65rem 0.9rem;
-      font-size: 0.9rem; cursor: pointer;
+      font-size: 0.9rem; cursor: pointer; transition: opacity 0.2s;
     }
     .enviar { background: var(--azul); color: #fff; }
+    .enviar.cargando { position: relative; }
+    .enviar.cargando::after {
+      content: '';
+      display: inline-block;
+      width: 14px; height: 14px; margin-left: 0.4rem;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
     .acciones { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
     .ok { background: #dcfce7; color: #166534; }
     .no { background: #fee2e2; color: #991b1b; }
@@ -56,49 +66,50 @@
       <button class="enviar" id="btnEnviar">Enviar</button>
     </div>
     <div class="acciones">
-      <button class="ok" id="btnSatisfecho">👍 Satisfecho — finalizar</button>
+      <button class="ok" id="btnFinish">👍 Satisfecho — finalizar</button>
     </div>
   </main>
 
   <script>
     let sessionId = null;
-    let pendienteInsatisfaccion = false;
     let finalizada = false;
 
     const chat = document.getElementById("chat");
     const entrada = document.getElementById("entrada");
     const btnEnviar = document.getElementById("btnEnviar");
-    const btnSatisfecho = document.getElementById("btnSatisfecho");
+    const btnFinish = document.getElementById("btnFinish");
 
-    function añadirMensaje(texto, clase, meta) {
+    function añadirMensaje(texto, clase) {
       const div = document.createElement("div");
       div.className = "msg " + clase;
       const burbuja = document.createElement("div");
       burbuja.className = "burbuja";
       burbuja.textContent = texto;
       div.appendChild(burbuja);
-      if (meta) {
+      if (clase === "bot") {
         const m = document.createElement("div");
-        m.className = "meta " + (meta.nivel === 2 ? "nivel2" : "nivel1");
-        m.textContent = meta.texto;
+        m.className = "meta";
+        m.textContent = "Respuesta del bot";
         div.appendChild(m);
       }
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
     }
 
+    // No permitir finalizar hasta tener sesión
+    btnFinish.disabled = true;
+
     async function enviar() {
       const mensaje = entrada.value.trim();
       if (!mensaje || finalizada) return;
       añadirMensaje(mensaje, "user");
       entrada.value = "";
+      entrada.disabled = true;
       btnEnviar.disabled = true;
+      btnEnviar.classList.add("cargando");
+      btnEnviar.textContent = "Enviando";
 
       const body = { mensaje, session_id: sessionId };
-      if (pendienteInsatisfaccion) {
-        body.feedback = "insatisfecho";
-        pendienteInsatisfaccion = false;
-      }
 
       try {
         const r = await fetch("/chat", {
@@ -106,39 +117,53 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.detail || "Error");
-        sessionId = data.session_id;
-        let etiqueta;
-        if (data.nivel === 2) {
-          etiqueta = "Nivel 2 · Experto" + (data.escalado ? ` (escalado: ${data.motivo})` : "");
-        } else if (data.nivel === 0) {
-          etiqueta = "Recepción";
-        } else {
-          etiqueta = "Nivel 1 · FAQ";
+        
+        let data;
+        try {
+          data = await r.json();
+        } catch (e) {
+          throw new Error('Error parsing server response');
         }
-        añadirMensaje(data.respuesta, "bot", { nivel: data.nivel, texto: etiqueta });
+        
+        if (!r.ok) {
+          throw new Error(data?.detail || data?.message || "Error del servidor");
+        }
+        
+        sessionId = data.session_id;
+        // Habilitar botón de finalizar una vez creada la sesión
+        if (sessionId) btnFinish.disabled = false;
+        añadirMensaje(data.respuesta, "bot");
       } catch (e) {
-        añadirMensaje("⚠️ " + e.message, "bot", { nivel: 1, texto: "error" });
+        añadirMensaje("⚠️ " + e.message, "bot");
       } finally {
+        entrada.disabled = false;
         btnEnviar.disabled = false;
+        btnEnviar.classList.remove("cargando");
+        btnEnviar.textContent = "Enviar";
         entrada.focus();
       }
     }
 
     async function finalizar() {
       if (!sessionId || finalizada) return;
-      const r = await fetch(`/session/${sessionId}/finalizar`, { method: "POST" });
-      const data = await r.json();
-      añadirMensaje(`${data.mensaje} (${data.turnos} turnos)`, "bot", { nivel: 1, texto: "sistema" });
-      finalizada = true;
-      entrada.disabled = true;
-      btnEnviar.disabled = true;
+      try {
+        const r = await fetch(`/session/${sessionId}/finalizar`, { method: "POST" });
+        if (!r.ok) throw new Error("Error al finalizar sesión");
+        const data = await r.json();
+        añadirMensaje(data.mensaje, "bot");
+        finalizada = true;
+        entrada.disabled = true;
+        btnEnviar.disabled = true;
+        btnFinish.disabled = true;
+        btnFinish.textContent = "✓ Sesión cerrada";
+      } catch (e) {
+        añadirMensaje("⚠️ Error al finalizar: " + e.message, "bot");
+      }
     }
 
     btnEnviar.addEventListener("click", enviar);
     entrada.addEventListener("keydown", (e) => { if (e.key === "Enter") enviar(); });
-    btnSatisfecho.addEventListener("click", finalizar);
+    btnFinish.addEventListener("click", finalizar);
 
   </script>
 </body>

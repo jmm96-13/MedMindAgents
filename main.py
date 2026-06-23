@@ -1,6 +1,5 @@
 import time
 import logging
-from typing import TypedDict, Literal, List
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -13,6 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel
 from typing import TypedDict, Literal, List, Optional
+from schemas import FinalizarResponse
+import sessions
+from contextlib import asynccontextmanager
+
 
 
 LLM_MODEL = "qwen3:8b"
@@ -24,15 +27,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     mensaje: str
-    feedback: Literal["satisfecho", "insatisfecho"] = "satisfecho"
 
 
 class ChatResponse(BaseModel):
     session_id: str
-    nivel: int
     respuesta: str
-    escalado: bool
-    motivo: str
 
 
 class SessionDict(TypedDict):
@@ -54,25 +53,40 @@ def get_sesion(session_id: str) -> Optional[SessionDict]:
     return SESSIONS.get(session_id)
 
 
-def escalar(session_id: str, motivo: str) -> None:
-    if session_id in SESSIONS:
-        SESSIONS[session_id]["nivel"] = 2
-        SESSIONS[session_id]["motivo_escalado"] = motivo
-
-
-def registrar_turno(session_id: str, mensaje: str, respuesta: str, nivel: int) -> None:
-    # En este ejemplo básico solo actualizamos el nivel y dejamos la sesión activa.
+def registrar_turno(session_id: str, mensaje: str, respuesta: str, nivel: int = 1) -> None:
+    # En este ejemplo básico registramos el turno en la sesión local (si existe).
     if session_id in SESSIONS:
         SESSIONS[session_id]["nivel"] = nivel
+        # opcional: mantener historial mínimo
+        historial = SESSIONS[session_id].setdefault("historial", [])
+        historial.append({"pregunta": mensaje, "respuesta": respuesta, "nivel": nivel})
+
+# Recursos compartidos, inicializados en el lifespan.
+RECURSOS: dict = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Compilando el grafo de triaje...")
+    RECURSOS["grafo"] = build_graph()
+    logger.info("Listo. Servidor preparado.")
+    yield
+    RECURSOS.clear()
 
 
-app = FastAPI(title="Triaje Médico - Chatbot")
+app = FastAPI(title="Triaje Médico - Chatbot" , lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str("./static")), name="static")
 
 @app.get("/")
 def index():
     return FileResponse(str("./static/index.html"))
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
@@ -89,35 +103,55 @@ def chat(req: ChatRequest):
     if not sesion["activa"]:
         raise HTTPException(status_code=409, detail="La sesión ya está finalizada")
 
-    # 2. Feedback de insatisfacción sobre la respuesta anterior → escalar.
-    if req.feedback == "insatisfecho":
-        escalar(session_id, "feedback")
-
     # 3. Ejecutar el grafo con el nivel actual de la sesión.
     estado_inicial = {
         "pregunta": req.mensaje,
-        "nivel": sesion["nivel"],
         "es_python": False,
         "contexto": [],
         "respuesta": "",
-        "escalado": False,
-        "motivo": sesion.get("motivo_escalado", ""),
     }
-    resultado = graph.invoke(estado_inicial)
-
-    # 4. Si el grafo escaló (auto), persistir el nivel 2 en la sesión.
-    if resultado.get("escalado") and sesion["nivel"] != 2:
-        escalar(session_id, resultado.get("motivo", "auto"))
+    resultado = RECURSOS["grafo"].invoke(estado_inicial)
 
     # 5. Registrar el turno y responder.
-    registrar_turno(session_id, req.mensaje, resultado["respuesta"], resultado["nivel"])
+    registrar_turno(session_id, req.mensaje, resultado["respuesta"])
     return ChatResponse(
         session_id=session_id,
-        nivel=resultado["nivel"],
         respuesta=resultado["respuesta"],
-        escalado=resultado.get("escalado", False),
-        motivo=resultado.get("motivo", ""),
     )
+
+@app.post("/session/{session_id}/finalizar", response_model=FinalizarResponse)
+def finalizar(session_id: str):
+    """Cierra la sesión cuando el usuario ha recibido las respuestas del triaje."""
+    sesion = sessions.finalizar(session_id)
+    if sesion is None:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    
+    # Mensaje de despedida personalizado
+    num_turnos = len(sesion["historial"])
+    mensaje_despedida = f"""¡Muchas gracias por utilizar el triaje médico!
+
+Hemos registrado tu consulta. Recuerda:
+• Seguir las recomendaciones de los especialistas
+• Acudir a urgencias si experimentas síntomas graves
+• Mantener un registro de tu historial médico
+
+Te deseamos una pronta recuperación. 💚
+
+(Sesión completada - {num_turnos} turno(s) registrado(s))"""
+    
+    return FinalizarResponse(
+        session_id=session_id,
+        mensaje=mensaje_despedida,
+        turnos=num_turnos,
+    )
+
+
+@app.get("/session/{session_id}")
+def estado_sesion(session_id: str):
+    sesion = sessions.get_sesion(session_id)
+    if sesion is None:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    return sesion
 
 
 logging.basicConfig(
@@ -153,27 +187,91 @@ retriever = vector_store.as_retriever(
 # ----------------------------------------------------------
 # 3. Estado compartido del grafo
 # ----------------------------------------------------------
-class SupportState(TypedDict):
-    # `symptoms` puede contener uno o varios síntomas (lista de strings)
-    symptoms: List[str]
-    context: List[str]   # fragmentos recuperados por RAG
-    causes: str
+class SupportState(TypedDict, total=False):
+    # Campos de entrada y salida
+    pregunta: str           # el mensaje del usuario
+    respuesta: str          # la respuesta del bot
+    # Campos del flujo de síntomas
+    symptoms: List[str]     # síntomas extraídos
+    context: List[str]      # fragmentos recuperados por RAG
+    causes: str             # posibles causas identificadas
+    categoria: str          # SINTOMAS o GENERAL
+    # Campos opcionales
+    es_python: bool
+    contexto: List[str]
+    evaluated: bool
+    recommended_specialists: List[str]
+
+# Recepción: clasifica si el mensaje es una consulta sobre Python o charla general.
+# Devuelve una sola etiqueta para que el enrutado sea barato y predecible 
+prompt_clasificador = ChatPromptTemplate.from_template(
+    """Clasifica el mensaje del usuario en UNA de estas categorías:
+
+- SINTOMAS: el usuario aporta síntomas físicos o psicológicos y quiere saber posibles causas.
+- GENERAL: saludos, presentaciones, charla, agradecimientos, despedidas o
+  cualquier cosa que NO sea una consulta técnica sobre Python.
+
+Responde EXACTAMENTE con una sola palabra: SINTOMAS o GENERAL. Nada más.
+
+Mensaje: {pregunta}
+
+Categoría:"""
+)
+
+# Recepción (nivel 0): da la bienvenida y conduce hacia una pregunta sobre sintomas.
+# No responde dudas técnicas, solo charla cordial y amable.
+prompt_recepcion = ChatPromptTemplate.from_template(
+    """Eres el agente de recepción de un servicio de diagnóstico.
+Tu trabajo es atender el inicio de la conversación: saluda con amabilidad,
+responde a la charla cordial (presentaciones, agradecimientos, despedidas) e
+invita al usuario a contarte su duda sobre síntomas.
+
+No respondas preguntas técnicas: si el usuario todavía no ha preguntado nada
+sobre síntomas, anímale a hacerlo. Sé breve, cercano y natural.
+
+Mensaje del usuario: {pregunta}
+
+Respuesta:"""
+)
+
+# Prompt para extraer una lista de síntomas desde el texto del usuario.
+prompt_extraer_sintomas = ChatPromptTemplate.from_template(
+    """Extrae una lista de SINTOMAS del siguiente mensaje. Devuelve los
+    síntomas separados por comas, en una sola línea, sin explicaciones.
+
+    Mensaje: {pregunta}
+
+    Síntomas:"""
+)
+
 
 # ----------------------------------------------------------
 # 4. Prompts (LangChain)
 # ----------------------------------------------------------
 # Prompt específico para extraer posibles causas de síntomas desde el contexto
-causes_prompt = ChatPromptTemplate.from_template(
-    """Eres un asistente que extrae POSIBLES CAUSAS de síntomas a partir
-    ÚNICAMENTE del contexto proporcionado (fuente: libro de diagnóstico).
-    No inventes información fuera del contexto. Responde en formato de lista
-    enumerada con cada posible causa seguida de una breve razón y la
-    referencia de la fuente entre corchetes.
 
+prompt_causas = ChatPromptTemplate.from_template(
+    """Eres un asistente que extrae POSIBLES CAUSAS de síntomas obtenidos por el prompt de recepción. 
+        Tu tarea es analizar la lista de síntomas,
+      a partir de ÚNICAMENTE el contexto proporcionado (fuente: manuales de diagnostico).
+      No inventes información fuera del contexto.
+        Responde en formato de lista enumerada con cada posible causa seguida
+        de una breve razón y la referencia de la fuente entre corchetes. 
+        
     Contexto:
     {context}
 
-    Síntomas (separados por comas o espacios): {symptoms}
+    Causas (separadas por comas o espacios): {causes}
+        
+    Respuesta:"""
+)
+    
+prompt_especialista = ChatPromptTemplate.from_template(
+    """Eres un asistente que evalúa a qué especialista acudir para cada causa encontrada y
+    muestra la lista formateada. Si no se puede asignar, recomendar 'médico de familia'; 
+    si la causa parece grave, recomendar 'urgencias'.
+
+    Causas encontradas: {causes}
 
     Respuesta:"""
 )
@@ -181,6 +279,54 @@ causes_prompt = ChatPromptTemplate.from_template(
 # ----------------------------------------------------------
 # 5. Nodos del grafo (LangGraph)
 # ----------------------------------------------------------
+
+def classify_chat_node(state: SupportState) -> SupportState:
+    """Clasifica el mensaje del usuario en SINTOMAS o GENERAL."""
+    pregunta = state.get("pregunta", "")
+    if not pregunta:
+        raise ValueError("No hay pregunta en el estado")
+
+    # Invocar el prompt de clasificación
+    chain = prompt_clasificador | llm
+    categoria = chain.invoke({"pregunta": pregunta}).content.strip().upper()
+    logger.info(f"Clasificación del mensaje: {categoria}")
+    state["categoria"] = categoria
+
+    # Si es categoría SINTOMAS, extraer lista de síntomas y guardarlos en el estado
+    if categoria == "SINTOMAS":
+        chain2 = prompt_extraer_sintomas | llm
+        sintomas_text = chain2.invoke({"pregunta": pregunta}).content.strip()
+        # convertir a lista separando por comas y limpiando espacios
+        sintomas = [s.strip() for s in sintomas_text.split(",") if s.strip()]
+        state["symptoms"] = sintomas
+
+    return state
+
+def decide_next_node(state: SupportState) -> str:
+    """Decide el siguiente nodo según la categoría del mensaje."""
+    categoria = state.get("categoria", "")
+    if categoria == "GENERAL":
+        return "reception"
+    elif categoria == "SINTOMAS":
+        return "find_causes"
+    else:
+        raise ValueError(f"Categoría desconocida: {categoria}")
+
+
+def reception_node(state: SupportState) -> SupportState:
+    """Nodo de recepción: saluda y conduce hacia la pregunta sobre síntomas."""
+    pregunta = state.get("pregunta", "")
+    if not pregunta:
+        raise ValueError("No hay pregunta en el estado")
+
+    # Invocar el prompt de recepción
+    chain = prompt_recepcion | llm
+    respuesta = chain.invoke({"pregunta": pregunta}).content.strip()
+    logger.info(f"Respuesta de recepción: {respuesta}")
+    state["respuesta"] = respuesta
+    return state
+
+
 def find_causes_node(state: SupportState) -> SupportState:
     """Buscar en Chroma los fragmentos relevantes y pedir al LLM que
     extraiga posibles causas de los síntomas."""
@@ -194,31 +340,9 @@ def find_causes_node(state: SupportState) -> SupportState:
     logger.info(f"Recuperados {len(context)} fragmentos de ChromaDB para síntomas")
 
     context_text = "\n\n".join(context)
-    chain = causes_prompt | llm
-    causes_text = chain.invoke({"context": context_text, "symptoms": symptoms_text}).content
+    chain = prompt_causas | llm
+    causes_text = chain.invoke({"context": context_text, "causes": symptoms_text}).content
     return {"context": context, "causes": causes_text}
-
-
-def _parse_causes_from_text(text: str) -> List[str]:
-    lines = [l.strip() for l in text.splitlines()]
-    causes = []
-    for l in lines:
-        if not l:
-            continue
-        # remover prefijos tipo '1.' '- ' '• '
-        for p in ("- ", "• ", "* "):
-            if l.startswith(p):
-                l = l[len(p):].strip()
-        # remover numeración
-        if l[0:3].strip().rstrip('.').isdigit():
-            # caso '1. Causa'
-            parts = l.split('.', 1)
-            if len(parts) > 1:
-                l = parts[1].strip()
-        # evitar líneas que no parecen causas (muy cortas)
-        if len(l) >= 3:
-            causes.append(l)
-    return causes
 
 
 
@@ -235,73 +359,68 @@ SPECIALIST_KEYWORDS = {
 
 SEVERE_KEYWORDS = ["parada", "paro", "hemorragia", "desmayo", "pérdida de consciencia", "sangrado profuso"]
 
-
-def _assign_specialist_for_cause(cause: str) -> str:
-    low = cause.lower()
-    for severe in SEVERE_KEYWORDS:
-        if severe in low:
-            return "urgencias"
-    for specialist, keys in SPECIALIST_KEYWORDS.items():
-        for k in keys:
-            if k in low:
-                return specialist
-    # si no se encuentra, recomendar médico de familia
-    return "médico de familia"
-
-
 def evaluate_specialist_node(state: SupportState) -> SupportState:
-    """Evalúa a qué especialista acudir para cada causa encontrada y
-    muestra la lista formateada. Si no se puede asignar, recomendar
-    'médico de familia'; si la causa parece grave, recomendar 'urgencias'.
-    """
+    """Evalúa a qué especialista acudir según las causas encontradas."""
     causes_text = state.get("causes", "")
-    causes_list = _parse_causes_from_text(causes_text)
+    if not causes_text:
+        raise ValueError("No hay causas en el estado")
 
-    results = []
-    for c in causes_list:
-        specialist = _assign_specialist_for_cause(c)
-        needs_more_info = (specialist == "médico de familia")
-        results.append({"cause": c, "specialist": specialist, "needs_more_info": needs_more_info})
+    # Evaluar especialista según palabras clave
+    recommended_specialists = set()
+    for specialist, keywords in SPECIALIST_KEYWORDS.items():
+        if any(keyword.lower() in causes_text.lower() for keyword in keywords):
+            recommended_specialists.add(specialist)
 
-    # Imprimir en formato legible: Causa -> Especialista (nota si necesita más info)
-    print("\nPosibles causas y especialista recomendado:\n")
-    for r in results:
-        print(f"- Causa: {r['cause']}")
-        print(f"  Especialista recomendado: {r['specialist']}")
-        if r["needs_more_info"]:
-            print("  Nota: asignación genérica; obtener más contexto si es posible.")
-        print()
+    # Si no se encuentra especialista, recomendar médico de familia
+    if not recommended_specialists:
+        recommended_specialists.add("médico de familia")
 
-    # Si no se encontraron causas específicas, recomendar médico de familia
-    if not results:
-        print("No se identificaron causas concretas en el contexto. Recomendar: médico de familia o urgencias según la gravedad.")
+    # Evaluar si alguna causa parece grave
+    is_severe = any(keyword.lower() in causes_text.lower() for keyword in SEVERE_KEYWORDS)
+    if is_severe:
+        recommended_specialists.add("urgencias")
 
-    return {"evaluated": True}
+    state["recommended_specialists"] = list(recommended_specialists)
+    
+    # Generar respuesta formateada para el usuario
+    symptoms_str = ", ".join(state.get("symptoms", []))
+    specialists_str = ", ".join(sorted(state["recommended_specialists"]))
+    respuesta_text = f"""Basándome en tus síntomas ({symptoms_str}):
 
-# (Ya no se usa en el flujo simplificado)
+**Posibles causas:**
+{causes_text}
+
+**Especialistas recomendados:**
+{specialists_str}
+
+Por favor, acude a un centro de salud para una evaluación profesional."""
+    
+    state["respuesta"] = respuesta_text
+    return state
+
+
 
 # ----------------------------------------------------------
 # 7. Construir el grafo simple (síntomas -> buscar causas -> imprimir)
 # ----------------------------------------------------------
-builder = StateGraph(SupportState)
+def build_graph() -> StateGraph:
+    builder = StateGraph(SupportState)
 
-builder.add_node("find_causes", find_causes_node)
-builder.add_node("evaluate_specialist", evaluate_specialist_node)
+    builder.add_node("classify_chat", classify_chat_node)
+    builder.add_node("reception", reception_node)
+    builder.add_node("find_causes", find_causes_node)
+    builder.add_node("evaluate_specialist", evaluate_specialist_node)
 
-builder.add_edge(START, "find_causes")
-builder.add_edge("find_causes", "evaluate_specialist")
-builder.add_edge("evaluate_specialist", END)
+    builder.add_edge(START, "classify_chat")
+    # Aristas condicionales desde classify_chat según la categoría
+    builder.add_conditional_edges(
+        "classify_chat",
+        lambda s: s.get("categoria", "GENERAL"),
+        path_map={"GENERAL": "reception", "SINTOMAS": "find_causes"},
+    )
+    builder.add_edge("reception", END)
+    builder.add_edge("find_causes", "evaluate_specialist")
+    builder.add_edge("evaluate_specialist", END)
 
-graph = builder.compile()
+    return builder.compile()
 
-# ----------------------------------------------------------
-# 8. Invocar el grafo desde __main__ (ejemplo sencillo)
-# ----------------------------------------------------------
-if __name__ == "__main__":
-    # Probar el flujo: pasar síntomas y mostrar causas encontradas
-    symptoms = ["dolor de garganta", "cefalea"]
-    result = graph.invoke({"symptoms": symptoms})
-    # El nodo evaluate_specialist ya imprime las causas y especialista; mostrar metadatos opcionales
-    context_used = result.get("context", [])
-    if context_used:
-        print(f"Fragmentos recuperados: {len(context_used)}")

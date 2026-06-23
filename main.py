@@ -11,10 +11,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-import config
-from . import config, indexing, sessions
-from .graph import construir_grafo
-from .schemas import ChatRequest, ChatResponse, FinalizarResponse
+from pydantic import BaseModel
+from typing import TypedDict, Literal, List, Optional
 
 
 LLM_MODEL = "qwen3:8b"
@@ -22,6 +20,51 @@ EMBEDDING_MODEL = "nomic-embed-text"
 TEMPERATURE = 0.5
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    mensaje: str
+    feedback: Literal["satisfecho", "insatisfecho"] = "satisfecho"
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    nivel: int
+    respuesta: str
+    escalado: bool
+    motivo: str
+
+
+class SessionDict(TypedDict):
+    activa: bool
+    nivel: int
+    motivo_escalado: str
+
+
+SESSIONS: dict[str, SessionDict] = {}
+
+
+def crear_sesion() -> str:
+    session_id = str(int(time.time() * 1000))
+    SESSIONS[session_id] = {"activa": True, "nivel": 1, "motivo_escalado": ""}
+    return session_id
+
+
+def get_sesion(session_id: str) -> Optional[SessionDict]:
+    return SESSIONS.get(session_id)
+
+
+def escalar(session_id: str, motivo: str) -> None:
+    if session_id in SESSIONS:
+        SESSIONS[session_id]["nivel"] = 2
+        SESSIONS[session_id]["motivo_escalado"] = motivo
+
+
+def registrar_turno(session_id: str, mensaje: str, respuesta: str, nivel: int) -> None:
+    # En este ejemplo básico solo actualizamos el nivel y dejamos la sesión activa.
+    if session_id in SESSIONS:
+        SESSIONS[session_id]["nivel"] = nivel
+
 
 app = FastAPI(title="Triaje Médico - Chatbot")
 
@@ -39,8 +82,8 @@ def chat(req: ChatRequest):
     FastAPI la ejecuta en su threadpool sin congelar el event loop.
     """
     # 1. Crear sesión si es el primer mensaje.
-    session_id = req.session_id or sessions.crear_sesion()
-    sesion = sessions.get_sesion(session_id)
+    session_id = req.session_id or crear_sesion()
+    sesion = get_sesion(session_id)
     if sesion is None:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
     if not sesion["activa"]:
@@ -48,7 +91,7 @@ def chat(req: ChatRequest):
 
     # 2. Feedback de insatisfacción sobre la respuesta anterior → escalar.
     if req.feedback == "insatisfecho":
-        sessions.escalar(session_id, "feedback")
+        escalar(session_id, "feedback")
 
     # 3. Ejecutar el grafo con el nivel actual de la sesión.
     estado_inicial = {
@@ -60,16 +103,14 @@ def chat(req: ChatRequest):
         "escalado": False,
         "motivo": sesion.get("motivo_escalado", ""),
     }
-    resultado = RECURSOS["grafo"].invoke(estado_inicial)
+    resultado = graph.invoke(estado_inicial)
 
     # 4. Si el grafo escaló (auto), persistir el nivel 2 en la sesión.
     if resultado.get("escalado") and sesion["nivel"] != 2:
-        sessions.escalar(session_id, resultado.get("motivo", "auto"))
+        escalar(session_id, resultado.get("motivo", "auto"))
 
     # 5. Registrar el turno y responder.
-    sessions.registrar_turno(
-        session_id, req.mensaje, resultado["respuesta"], resultado["nivel"]
-    )
+    registrar_turno(session_id, req.mensaje, resultado["respuesta"], resultado["nivel"])
     return ChatResponse(
         session_id=session_id,
         nivel=resultado["nivel"],

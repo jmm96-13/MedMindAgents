@@ -15,12 +15,16 @@ from typing import TypedDict, Literal, List, Optional
 from schemas import FinalizarResponse
 import sessions
 from contextlib import asynccontextmanager
+import os
 
 
 
 LLM_MODEL = "gemma3:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
 TEMPERATURE = 0.5
+
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -138,10 +142,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("assitant")
 
-llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE)
-
-embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
-
+llm = ChatOllama(model=LLM_MODEL, temperature=TEMPERATURE, base_url=OLLAMA_HOST)
+embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_HOST)
 
 # Crear / cargar el vector store persistente
 vector_store = Chroma(

@@ -71,7 +71,7 @@ pip install -r requirements.txt
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull qwen3:8b
+ollama pull gemma3:4b
 ```
 
 ### 4. (Opcional) Indexar documentos médicos en ChromaDB
@@ -148,6 +148,9 @@ embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_HOST)
 
 ### Pasos
 
+**0. Abrir docker desktop**
+
+
 **1. Construir y arrancar los contenedores**
 ```bash
 docker compose up --build
@@ -158,10 +161,10 @@ docker compose up --build
 Con los contenedores corriendo, en otra terminal:
 ```bash
 docker exec -it ollama ollama pull nomic-embed-text
-docker exec -it ollama ollama pull qwen3:8b
+docker exec -it ollama ollama pull gemma3:4b
 ```
 
-> `qwen3:8b` pesa ~5 GB. La descarga puede tardar varios minutos.
+> `gemma3:4b` pesa ~5 GB. La descarga puede tardar varios minutos.
 
 **3. Abrir en el navegador**
 

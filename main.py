@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 
 
 
-LLM_MODEL = "qwen3:8b"
+LLM_MODEL = "gemma3:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
 TEMPERATURE = 0.5
 
@@ -38,28 +38,6 @@ class SessionDict(TypedDict):
     activa: bool
     nivel: int
     motivo_escalado: str
-
-
-SESSIONS: dict[str, SessionDict] = {}
-
-
-def crear_sesion() -> str:
-    session_id = str(int(time.time() * 1000))
-    SESSIONS[session_id] = {"activa": True, "nivel": 1, "motivo_escalado": ""}
-    return session_id
-
-
-def get_sesion(session_id: str) -> Optional[SessionDict]:
-    return SESSIONS.get(session_id)
-
-
-def registrar_turno(session_id: str, mensaje: str, respuesta: str, nivel: int = 1) -> None:
-    # En este ejemplo básico registramos el turno en la sesión local (si existe).
-    if session_id in SESSIONS:
-        SESSIONS[session_id]["nivel"] = nivel
-        # opcional: mantener historial mínimo
-        historial = SESSIONS[session_id].setdefault("historial", [])
-        historial.append({"pregunta": mensaje, "respuesta": respuesta, "nivel": nivel})
 
 # Recursos compartidos, inicializados en el lifespan.
 RECURSOS: dict = {}
@@ -96,8 +74,8 @@ def chat(req: ChatRequest):
     FastAPI la ejecuta en su threadpool sin congelar el event loop.
     """
     # 1. Crear sesión si es el primer mensaje.
-    session_id = req.session_id or crear_sesion()
-    sesion = get_sesion(session_id)
+    session_id = req.session_id or sessions.crear_sesion()
+    sesion = sessions.get_sesion(session_id)
     if sesion is None:
         raise HTTPException(status_code=404, detail="Sesión no encontrada")
     if not sesion["activa"]:
@@ -113,7 +91,7 @@ def chat(req: ChatRequest):
     resultado = RECURSOS["grafo"].invoke(estado_inicial)
 
     # 5. Registrar el turno y responder.
-    registrar_turno(session_id, req.mensaje, resultado["respuesta"])
+    sessions.registrar_turno(session_id, req.mensaje, resultado["respuesta"])
     return ChatResponse(
         session_id=session_id,
         respuesta=resultado["respuesta"],
@@ -347,18 +325,137 @@ def find_causes_node(state: SupportState) -> SupportState:
 
 
 SPECIALIST_KEYWORDS = {
-    "cardiología": ["infarto", "angina", "dolor toracico", "palpitaciones"],
-    "neumología": ["dificultad respiratoria", "disnea", "tos", "sibilancias"],
-    "neurología": ["mareo", "convuls", "pérdida de consciencia", "cefalea", "dolor de cabeza"],
-    "ginecología": ["sangrado vaginal", "dolor pélvico"],
-    "digestivo": ["dolor abdominal", "náuseas", "vómito", "diarrea"],
-    "dermatología": ["erupción", "rash", "urticaria", "prurito"],
-    "urología": ["dolor lumbar", "hematouria", "disuria"],
+    "cardiología": [
+        "infarto", "angina", "dolor torácico", "dolor en el pecho", "presión en el pecho",
+        "opresión torácica", "dolor pectoral", "palpitaciones", "taquicardia", "bradicardia",
+        "arritmia", "fibrilación", "latidos irregulares", "corazón acelerado", "corazón lento",
+        "insuficiencia cardíaca", "edema en piernas", "hinchazón de tobillos", "cianosis",
+        "labios morados", "dedos morados", "soplo cardíaco", "dolor irradiado al brazo",
+        "dolor irradiado a la mandíbula",
+    ],
+    "neumología": [
+        "dificultad respiratoria", "dificultad para respirar", "disnea", "ahogo",
+        "falta de aire", "sensación de asfixia", "respiración entrecortada",
+        "tos", "tos seca", "tos con flemas", "tos crónica", "tos nocturna",
+        "tos con sangre", "expectoración", "esputo", "sibilancias", "pitos al respirar",
+        "ronquidos", "estridor", "asma", "bronquitis", "neumonía", "enfisema",
+        "apnea del sueño", "dolor al respirar", "pleuresía",
+    ],
+    "neurología": [
+        "cefalea", "dolor de cabeza", "migraña", "jaqueca", "mareo", "vértigo",
+        "desequilibrio", "inestabilidad al caminar", "pérdida de consciencia", "desmayo",
+        "síncope", "convulsión", "epilepsia", "confusión", "desorientación",
+        "pérdida de memoria", "amnesia", "temblor", "rigidez muscular", "espasmos",
+        "parálisis", "paresia", "debilidad en brazo", "debilidad en pierna",
+        "hormigueo", "entumecimiento", "visión doble", "diplopía",
+        "dificultad para hablar", "disartria", "afasia", "ictus", "derrame cerebral",
+        "esclerosis", "neuropatía",
+    ],
+    "traumatología": [
+        "fractura", "hueso roto", "dolor óseo", "dolor articular", "artralgia",
+        "artritis", "artrosis", "luxación", "esguince", "distensión",
+        "dolor de rodilla", "dolor de cadera", "dolor de hombro", "dolor de codo",
+        "dolor de muñeca", "dolor de tobillo", "dolor de columna", "escoliosis",
+        "hernia discal", "ciática", "dolor lumbar", "lumbago", "contractura",
+        "tendinitis", "rotura de ligamento", "menisco", "bursitis",
+    ],
+    "gastroenterología": [
+        "dolor abdominal", "dolor de estómago", "dolor de barriga", "cólico",
+        "dolor epigástrico", "ardor de estómago", "acidez", "náuseas", "vómitos",
+        "vómito", "arcadas", "regurgitación", "diarrea", "estreñimiento",
+        "heces blandas", "heces duras", "sangre en heces", "heces negras", "melena",
+        "hinchazón abdominal", "distensión", "gases", "flatulencia", "eructos",
+        "pérdida de apetito", "disfagia", "dificultad para tragar",
+        "ictericia", "color amarillo piel", "hepatitis", "úlcera",
+    ],
+    "ginecología": [
+        "sangrado vaginal", "hemorragia vaginal", "menstruación abundante",
+        "reglas irregulares", "amenorrea", "falta de menstruación",
+        "sangrado fuera de ciclo", "dolor pélvico", "dolor menstrual", "dismenorrea",
+        "dolor ovárico", "dolor vaginal", "dolor durante relaciones", "dispareunia",
+        "flujo vaginal", "picor vaginal", "ardor vaginal", "vulvitis",
+        "bulto en mama", "dolor de mama", "mastitis", "pezón hundido",
+        "secreción del pezón",
+    ],
+    "urología": [
+        "dolor al orinar", "escozor al orinar", "disuria", "ardor al orinar",
+        "sangre en orina", "hematuria", "orina oscura", "orina turbia",
+        "frecuencia urinaria", "necesidad urgente de orinar", "incontinencia",
+        "retención de orina", "dificultad para orinar", "dolor renal",
+        "cólico renal", "cólico nefrítico", "piedras en el riñón", "cálculos renales",
+        "dolor de próstata", "prostatitis", "chorro de orina débil",
+    ],
+    "dermatología": [
+        "erupción", "erupción cutánea", "rash", "sarpullido", "manchas en la piel",
+        "lesiones cutáneas", "ampollas", "vesículas", "pústulas", "costras",
+        "urticaria", "prurito", "picor en la piel", "escozor cutáneo",
+        "piel seca", "descamación", "psoriasis", "eczema", "dermatitis",
+        "rojez", "eritema", "enrojecimiento", "lunar", "nevus", "cambio en lunar",
+        "bulto en la piel", "quiste", "acné", "forúnculo",
+        "caída del cabello", "alopecia", "uñas frágiles",
+    ],
+    "oftalmología": [
+        "pérdida de visión", "visión borrosa", "visión doble", "diplopía",
+        "moscas volantes", "destellos", "fotopsias", "visión reducida",
+        "ojo rojo", "conjuntivitis", "dolor ocular", "ardor en ojos",
+        "picor en ojos", "lagrimeo excesivo", "ojo seco",
+        "párpado caído", "ptosis", "orzuelo", "chalazión",
+        "glaucoma", "cataratas", "presión ocular",
+    ],
+    "otorrinolaringología": [
+        "dolor de oído", "otalgia", "otitis", "pérdida de audición", "sordera",
+        "pitidos en los oídos", "tinnitus", "acúfenos", "tapón de cera",
+        "congestión nasal", "moco", "rinitis", "sinusitis", "dolor facial",
+        "sangrado nasal", "epistaxis", "pérdida del olfato", "anosmia",
+        "dolor de garganta", "faringitis", "amigdalitis", "ronquera",
+        "disfonía", "nódulos en cuello",
+    ],
+    "endocrinología": [
+        "bocio", "nódulo tiroideo", "hipotiroidismo", "hipertiroidismo",
+        "intolerancia al frío", "intolerancia al calor",
+        "sed excesiva", "polidipsia", "orina frecuente", "poliuria",
+        "hambre excesiva", "hipoglucemia", "glucosa alta",
+        "aumento de peso inexplicable", "pérdida de peso inexplicable",
+        "fatiga crónica", "cansancio extremo", "sudoración excesiva", "hiperhidrosis",
+    ],
+    "reumatología": [
+        "artritis reumatoide", "articulaciones inflamadas", "rigidez matutina",
+        "dolor en varias articulaciones", "poliartralgia", "lupus",
+        "fibromialgia", "dolor muscular generalizado", "mialgia difusa",
+        "gota", "dolor en dedo gordo del pie",
+    ],
+    "psiquiatría / psicología": [
+        "depresión", "tristeza persistente", "falta de motivación",
+        "ansiedad", "nerviosismo excesivo", "ataques de pánico", "pánico",
+        "insomnio", "dificultad para dormir", "hipersomnia",
+        "cambios de humor", "irritabilidad extrema", "agresividad",
+        "pensamientos obsesivos", "alucinaciones", "paranoia", "delirios",
+        "pensamientos de hacerse daño", "ideación suicida",
+        "trastorno alimentario", "anorexia", "bulimia", "fobia",
+    ],
+    "hematología": [
+        "anemia", "palidez", "sangrado fácil", "moratones sin causa",
+        "hematomas espontáneos", "ganglios inflamados", "linfoma", "leucemia",
+        "plaquetas bajas", "trombosis", "tromboflebitis",
+    ],
+    "infectología": [
+        "fiebre persistente", "escalofríos", "sudores nocturnos",
+        "infección generalizada", "sepsis", "picadura de garrapata",
+        "VIH", "sida", "infecciones de repetición",
+    ],
 }
 
-
-SEVERE_KEYWORDS = ["parada", "paro", "hemorragia", "desmayo", "pérdida de consciencia", "sangrado profuso"]
-
+SEVERE_KEYWORDS = [
+    "parada cardíaca", "paro cardíaco", "paro respiratorio", "parada respiratoria",
+    "colapso", "pérdida de consciencia", "inconsciencia",
+    "hemorragia", "sangrado profuso", "sangrado abundante", "sangrado incontrolable",
+    "ictus", "derrame cerebral", "convulsiones repetidas", "parálisis súbita",
+    "dificultad para hablar de repente", "confusión repentina",
+    "asfixia", "no puede respirar", "labios morados", "cianosis",
+    "dolor torácico intenso", "dolor de pecho muy fuerte",
+    "reacción alérgica grave", "anafilaxia",
+    "quemadura grave", "traumatismo grave", "fractura expuesta",
+]
 def evaluate_specialist_node(state: SupportState) -> SupportState:
     """Evalúa a qué especialista acudir según las causas encontradas."""
     causes_text = state.get("causes", "")

@@ -6,59 +6,131 @@
   <title>Triaje Médico — Chatbot</title>
   <style>
     :root { --azul: #2563eb; --gris: #f1f5f9; --borde: #e2e8f0; }
-    * { box-sizing: border-box; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-      margin: 0; background: #fafafa; color: #1e293b;
-      display: flex; justify-content: center;
-    }
-    main { width: 100%; max-width: 760px; padding: 1rem; }
-    h1 { font-size: 1.25rem; margin: 0.5rem 0; }
-    .sub { color: #64748b; font-size: 0.85rem; margin-bottom: 1rem; }
-    #chat {
-      border: 1px solid var(--borde); border-radius: 12px; background: #fff;
-      height: 60vh; overflow-y: auto; padding: 1rem; margin-bottom: 0.75rem;
-    }
-    .msg { margin-bottom: 0.9rem; display: flex; flex-direction: column; }
-    .msg .burbuja {
-      padding: 0.6rem 0.8rem; border-radius: 12px; max-width: 85%;
-      white-space: pre-wrap; line-height: 1.4;
-    }
-    .user { align-items: flex-end; }
-    .user .burbuja { background: var(--azul); color: #fff; }
-    .bot { align-items: flex-start; }
-    .bot .burbuja { background: var(--gris); }
-    .meta { font-size: 0.72rem; color: #64748b; margin-top: 0.2rem; }
-    .fila { display: flex; gap: 0.5rem; }
-    input[type=text] {
-      flex: 1; padding: 0.65rem 0.8rem; border: 1px solid var(--borde);
-      border-radius: 10px; font-size: 1rem;
-    }
-    button {
-      border: none; border-radius: 10px; padding: 0.65rem 0.9rem;
-      font-size: 0.9rem; cursor: pointer; transition: opacity 0.2s;
-    }
-    .enviar { background: var(--azul); color: #fff; }
-    .enviar.cargando { position: relative; }
-    .enviar.cargando::after {
-      content: '';
-      display: inline-block;
-      width: 14px; height: 14px; margin-left: 0.4rem;
-      border: 2px solid rgba(255,255,255,0.3);
-      border-top-color: #fff; border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      vertical-align: middle;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .acciones { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
-    .ok { background: #dcfce7; color: #166534; }
-    .no { background: #fee2e2; color: #991b1b; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0; 
+  color: #1e293b;
+  display: flex; 
+  justify-content: center;
+  background-color: #fafafa; 
+  background-image: url('../static/img/fondo.png');
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+main { 
+  width: 100%; 
+  max-width: 760px; 
+  padding: 1rem 1.5rem 1.5rem; 
+  background: #f8fafc; 
+  border-radius: 16px; 
+  margin-top: 4vh; 
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+}
+
+/* --- CABECERA --- */
+.header-triaje {
+  display: flex;
+  align-items: center; 
+  justify-content: center; 
+  gap: 0.8rem; 
+  margin: 0 0 1.2rem 0; 
+}
+
+/* El elemento fantasma para que el texto quede en el centro exacto */
+.header-triaje::after {
+  content: '';
+  display: block;
+  width: 32px; 
+  flex-shrink: 0;
+}
+
+.header-triaje h1 {
+  margin: 0; 
+  color: #0f172a;
+  font-size: 1.25rem;
+  text-align: center;
+}
+
+.icono-triaje {
+  width: 75px; 
+  height: 75px;
+  object-fit: contain;
+  flex-shrink: 0; 
+}
+
+/* --- RESTO DEL CHAT --- */
+.sub { color: #64748b; font-size: 0.85rem; margin-bottom: 1rem; }
+
+#chat {
+  border: 1px solid var(--borde); border-radius: 12px; background: #fff;
+  height: 60vh; overflow-y: auto; padding: 1rem; margin-bottom: 0.75rem;
+}
+
+.msg { margin-bottom: 0.9rem; display: flex; flex-direction: column; }
+.msg .burbuja {
+  padding: 0.6rem 0.8rem; border-radius: 12px; max-width: 85%;
+  white-space: pre-wrap; line-height: 1.4;
+}
+.user { align-items: flex-end; }
+.user .burbuja { background: var(--azul); color: #fff; }
+.bot { align-items: flex-start; }
+.bot .burbuja { background: var(--gris); }
+.meta { font-size: 0.72rem; color: #64748b; margin-top: 0.2rem; }
+
+.fila { display: flex; gap: 0.5rem; }
+input[type=text] {
+  flex: 1; padding: 0.65rem 0.8rem; border: 1px solid var(--borde);
+  border-radius: 10px; font-size: 1rem;
+}
+button {
+  border: none; border-radius: 10px; padding: 0.65rem 0.9rem;
+  font-size: 0.9rem; cursor: pointer; transition: opacity 0.2s, background-color 0.2s;
+}
+
+.enviar { background: var(--azul); color: #fff; }
+.enviar.cargando { position: relative; }
+.enviar.cargando::after {
+  content: '';
+  display: inline-block;
+  width: 14px; height: 14px; margin-left: 0.4rem;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff; border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- ZONA DEL BOTÓN FINALIZAR --- */
+.acciones { 
+  display: flex; 
+  justify-content: center; /* Centra el botón */
+  gap: 0.5rem; 
+  margin-top: 0.8rem; 
+}
+
+.btn-rojo { 
+  background-color: #ef4444; 
+  color: white; 
+  font-weight: 500;
+}
+.btn-rojo:hover:not(:disabled) { 
+  background-color: #dc2626; 
+}
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Triaje Médico</h1>
+    <div class="header-triaje">
+      <img src="../static/img/logo.png" alt="Icono de triaje médico" class="icono-triaje">
+      <h1>Triaje Médico - Chatbot</h1>
+    </div>
   
     <div id="chat"></div>
     <div class="fila">
@@ -66,7 +138,7 @@
       <button class="enviar" id="btnEnviar">Enviar</button>
     </div>
     <div class="acciones">
-      <button class="ok" id="btnFinish">👍 Satisfecho — finalizar</button>
+      <button class="ok" id="btnFinish">Finalizar Consulta</button>
     </div>
   </main>
 

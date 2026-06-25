@@ -17,13 +17,11 @@ import sessions
 from contextlib import asynccontextmanager
 import os
 
-
-
 LLM_MODEL = "gemma3:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
 TEMPERATURE = 0.5
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_HOST = os.getenv("OLLAMA_API_BASE_URL", "http://localhost:11434")
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
